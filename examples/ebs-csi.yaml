@@ -1,0 +1,88 @@
+apiVersion: smoketest.turnkey.engineering/v1alpha1
+kind: SmokeTest
+metadata:
+  name: ebs-csi
+spec:
+  stages:
+    - name: claim
+      timeout: 1m
+      createPVC:
+        template:
+          metadata:
+            name: data
+          spec:
+            storageClassName: ebs-gp3
+            accessModes: [ReadWriteOnce]
+            volumeMode: Filesystem
+            resources:
+              requests:
+                storage: 1Gi
+    - name: writer
+      dependsOn: [claim]
+      timeout: 1m
+      createPod:
+        template:
+          metadata:
+            name: writer
+          spec:
+            serviceAccountName: infra-smoketest-probe
+            automountServiceAccountToken: false
+            restartPolicy: Never
+            nodeSelector:
+              turnkey.engineering/cloud-platform: aws
+            containers:
+              - name: probe
+                command: [/bin/infra-smoketest]
+                args: [probe, storage-write]
+                volumeMounts:
+                  - name: data
+                    mountPath: /data
+            volumes:
+              - name: data
+                persistentVolumeClaim:
+                  claimName: data
+    - name: persisted
+      dependsOn: [writer]
+      timeout: 5m
+      assert:
+        - type: VolumeBound
+          resource: {fromStage: claim}
+        - type: VolumeAttached
+          resource: {fromStage: claim}
+        - type: ProbeResult
+          resource: {fromStage: writer}
+    - name: remove-writer
+      dependsOn: [persisted]
+      timeout: 1m
+      deleteResource: {fromStage: writer}
+    - name: reader
+      dependsOn: [remove-writer]
+      timeout: 1m
+      createPod:
+        template:
+          metadata:
+            name: reader
+          spec:
+            serviceAccountName: infra-smoketest-probe
+            automountServiceAccountToken: false
+            restartPolicy: Never
+            nodeSelector:
+              turnkey.engineering/cloud-platform: aws
+            containers:
+              - name: probe
+                command: [/bin/infra-smoketest]
+                args: [probe, storage-read]
+                volumeMounts:
+                  - name: data
+                    mountPath: /data
+                    readOnly: true
+            volumes:
+              - name: data
+                persistentVolumeClaim:
+                  claimName: data
+    - name: verified
+      dependsOn: [reader]
+      timeout: 5m
+      assert:
+        - type: ProbeResult
+          resource: {fromStage: reader}

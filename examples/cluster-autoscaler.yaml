@@ -1,0 +1,61 @@
+apiVersion: smoketest.turnkey.engineering/v1alpha1
+kind: SmokeTest
+metadata:
+  name: cluster-autoscaler
+spec:
+  stages:
+    - name: empty-pool
+      timeout: 5m
+      assert:
+        - type: NodePoolEmpty
+          nodeSelector:
+            turnkey.engineering/designated-for: smoke-tests
+    - name: demand
+      dependsOn: [empty-pool]
+      timeout: 1m
+      createPod:
+        template:
+          metadata:
+            name: demand
+          spec:
+            serviceAccountName: infra-smoketest-probe
+            automountServiceAccountToken: false
+            restartPolicy: Never
+            nodeSelector:
+              turnkey.engineering/designated-for: smoke-tests
+            tolerations:
+              - key: turnkey.engineering/designated-for
+                operator: Equal
+                value: smoke-tests
+                effect: NoSchedule
+            containers:
+              - name: probe
+                # Omitted image inherits the controller's deployed image.
+                command: [/bin/infra-smoketest]
+                args: [probe, ready]
+                readinessProbe:
+                  httpGet:
+                    path: /readyz
+                    port: 8080
+    - name: scale-up
+      dependsOn: [demand]
+      timeout: 15m
+      assert:
+        - type: InitiallyUnschedulable
+          resource: {fromStage: demand}
+        - type: AutoscalerScaleUpObserved
+          resource: {fromStage: demand}
+        - type: ScheduledOnNewNode
+          resource: {fromStage: demand, relation: scheduledNode}
+        - type: ResourceStatus
+          resource: {fromStage: demand, relation: scheduledNode}
+          status:
+            conditions:
+              - type: Ready
+                status: "True"
+        - type: ResourceStatus
+          resource: {fromStage: demand}
+          status:
+            conditions:
+              - type: Ready
+                status: "True"

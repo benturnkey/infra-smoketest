@@ -1,0 +1,32 @@
+apiVersion: smoketest.turnkey.engineering/v1alpha1
+kind: SmokeTest
+metadata:
+  name: aws-pod-identity-webhook
+spec:
+  stages:
+    - name: identity
+      timeout: 1m
+      createPod:
+        template:
+          metadata:
+            name: identity
+            labels:
+              pod-identity-webhook: required
+          spec:
+            serviceAccountName: infra-smoketest-aws
+            automountServiceAccountToken: false
+            restartPolicy: Never
+            nodeSelector:
+              turnkey.engineering/cloud-platform: aws
+            containers:
+              - name: probe
+                command: [/bin/infra-smoketest]
+                args: [probe, identity]
+    - name: authenticated
+      dependsOn: [identity]
+      timeout: 3m
+      assert:
+        - type: WebIdentity
+          resource: {fromStage: identity}
+        - type: ProbeResult
+          resource: {fromStage: identity}
