@@ -14,10 +14,12 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/utils/ptr"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 func (r *Reconciler) step(ctx context.Context, run *api.SmokeTestRun, stage api.Stage) (bool, string, error) {
+	ctx = ctrl.LoggerInto(ctx, ctrl.LoggerFrom(ctx).WithValues("stage", stage.Name))
 	if stage.CreatePod != nil || stage.CreatePVC != nil {
 		rec := record(run, stage.Name)
 		if rec == nil {
@@ -54,6 +56,7 @@ func (r *Reconciler) step(ctx context.Context, run *api.SmokeTestRun, stage api.
 				return false, "", err
 			}
 			existing = obj
+			ctrl.LoggerFrom(ctx).Info("Created resource", "resourceKind", rec.Kind, "resource", client.ObjectKeyFromObject(obj).String(), "resourceUID", obj.GetUID())
 		} else if err != nil {
 			return false, "", err
 		}
@@ -92,17 +95,25 @@ func (r *Reconciler) step(ctx context.Context, run *api.SmokeTestRun, stage api.
 			return false, "Deletion intent saved", nil
 		}
 		if obj.GetDeletionTimestamp().IsZero() {
-			err = r.Delete(ctx, obj, client.Preconditions{UID: ptr.To(obj.GetUID())})
+			err = r.deleteResource(ctx, obj, rec.Kind)
 		}
 		return false, "Waiting for resource deletion", client.IgnoreNotFound(err)
 	}
 	for _, a := range stage.Assert {
 		done, message, err := r.assert(ctx, run, a)
 		if err != nil || !done {
-			return done, message, err
+			return done, fmt.Sprintf("%s: %s", a.Type, message), err
 		}
 	}
 	return true, "Assertions passed", nil
+}
+
+func (r *Reconciler) deleteResource(ctx context.Context, obj client.Object, kind string) error {
+	if err := r.Delete(ctx, obj, client.Preconditions{UID: ptr.To(obj.GetUID())}); err != nil {
+		return client.IgnoreNotFound(err)
+	}
+	ctrl.LoggerFrom(ctx).Info("Requested resource deletion", "resourceKind", kind, "resource", client.ObjectKeyFromObject(obj).String(), "resourceUID", obj.GetUID())
+	return nil
 }
 
 func (r *Reconciler) storagePreflight(ctx context.Context) error {

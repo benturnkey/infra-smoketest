@@ -68,10 +68,12 @@ published by preparing this repository.
 
 ## Install and run
 
-The manifests in [config/default](config/default) install the namespace, CRDs,
-controller Deployment, controller/probe ServiceAccounts, and RBAC. The controller
-is restricted to the `infra-smoketest` namespace and has read-only cluster
-permissions. It does not create IAM roles, ASGs, or the AWS ServiceAccount.
+The manifests in [config/default](config/default) install the namespace,
+controller Deployment, controller/probe ServiceAccounts, RBAC, and all three
+`SmokeTest` definitions from [examples](examples). Install the CRDs from
+[config/crd](config/crd) first. The controller is restricted to the
+`infra-smoketest` namespace and has read-only cluster permissions. It does not
+create IAM roles, ASGs, or the AWS ServiceAccount.
 
 Before a live test, arrange these prerequisites through their owning repos:
 
@@ -112,12 +114,17 @@ patches:
           - --expected-role-arn=arn:aws:iam::ACCOUNT:role/infra-smoketest-aws
 ```
 
-Apply your overlay, then the definitions. Creating a definition does not start
-a test; create a fresh Run for every execution:
+Install the CRDs, then apply your overlay. The overlay includes the definitions
+through `config/default`; no separate examples installation is needed. Installing
+the definitions does not start a test; create a fresh Run for every execution:
 
 ```sh
+kubectl apply --server-side -k config/crd
+kubectl wait --for=condition=Established --timeout=60s \
+  crd/smoketests.smoketest.turnkey.engineering \
+  crd/smoketestruns.smoketest.turnkey.engineering
 kubectl apply --server-side -k path/to/your-overlay
-kubectl apply -k examples
+kubectl get smoketests -n infra-smoketest
 kubectl create -f - <<'YAML'
 apiVersion: smoketest.turnkey.engineering/v1alpha1
 kind: SmokeTestRun
@@ -137,7 +144,16 @@ kubectl get smoketestrun RUN-NAME -n infra-smoketest -o yaml
 Use server-side apply for installation: embedding native Kubernetes template
 schemas makes these CRDs too large for some client-side apply annotations.
 
-Use `testRef.name: ebs-csi` or `aws-pod-identity-webhook` for the other tests.
+`spec.testRef` selects a `SmokeTest` definition in the Run's namespace. List
+available definitions with `kubectl get smoketests -n infra-smoketest`, then set
+`testRef.name` to one of the returned names. The default deployment installs
+`cluster-autoscaler`, `ebs-csi`, and `aws-pod-identity-webhook`. Optional `testRef.uid`
+and `testRef.generation` require a matching definition UID and generation;
+otherwise, the Run snapshots the current definition when accepted.
+
+Use `kubectl explain smoketestrun.spec.testRef` or
+`kubectl explain smoketest.spec.stages` for field descriptions.
+
 `kubectl wait --for=condition=Complete ...` only waits for a terminal result:
 also inspect `Succeeded` and `CleanupComplete`; completion alone does not mean
 the test passed. The API rejects changes to an existing Run's spec.
@@ -154,6 +170,17 @@ nix develop path:. --command go run ./cmd/infra-smoketest controller \
 ```
 
 ## Runtime behavior and limits
+
+The controller logs Run acceptance, stage progress and deadlines, resource
+creation/deletion, observed scheduling/storage evidence, and cleanup outcomes at
+the default info level. Entries identify the Run, its UID, the test definition,
+and the stage or resource where applicable. Unchanged waits are not logged on
+every poll. Add `--zap-log-level=debug` to the controller arguments for reconcile
+and waiting messages on each poll; `--zap-encoder=console` enables console output.
+
+Follow logs with `kubectl logs -n infra-smoketest deployment/infra-smoketest -f`.
+Run status remains the durable record of progress and results:
+`kubectl get smoketestrun RUN-NAME -n infra-smoketest -o yaml`.
 
 Run definitions, image references, stage deadlines, resource UIDs, transition
 evidence, and probe results are persisted in Run status. Pod/PVC names are

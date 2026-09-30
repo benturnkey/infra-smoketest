@@ -1,8 +1,12 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 namespace: infra-smoketest
+images:
+  - name: ghcr.io/tkhq/infra-smoketest
+    newName: ghcr.io/benturnkey/infra-smoketest
+    digest: sha256:3e277ab1edfc4ef9aa66f33dff1caae70fe71be684fbaf336c1d568bbf11c711
 resources:
   - namespace.yaml
-  - ../crd
   - rbac.yaml
   - deployment.yaml
+  - ../../examples

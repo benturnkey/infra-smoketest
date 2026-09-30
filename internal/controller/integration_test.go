@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -13,10 +14,12 @@ import (
 	"github.com/tkhq/infra-smoketest/internal/definition"
 	coordv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/util/diff"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -24,7 +27,8 @@ import (
 	"sigs.k8s.io/yaml"
 )
 
-func TestAPIServerLifecycle(t *testing.T) {
+func newIntegrationClient(t *testing.T) client.Client {
+	t.Helper()
 	if os.Getenv("KUBEBUILDER_ASSETS") == "" {
 		t.Fatal("run integration tests through nix develop")
 	}
@@ -52,6 +56,63 @@ func TestAPIServerLifecycle(t *testing.T) {
 	if err = c.Create(ctx, &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Name: definition.ProbeSA, Namespace: definition.Namespace}}); err != nil {
 		t.Fatal(err)
 	}
+	return c
+}
+
+func TestDefinitionMetadataRoundTrip(t *testing.T) {
+	c := newIntegrationClient(t)
+	ctx := context.Background()
+	strict := client.FieldValidation(metav1.FieldValidationStrict)
+	for _, name := range []string{"cluster-autoscaler", "ebs-csi", "aws-pod-identity-webhook"} {
+		t.Run(name, func(t *testing.T) {
+			b, err := os.ReadFile(filepath.Join("..", "..", "examples", name+".yaml"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			test := &api.SmokeTest{}
+			if err = yaml.Unmarshal(b, test); err != nil {
+				t.Fatal(err)
+			}
+			test.Namespace = definition.Namespace
+			want := test.Spec.DeepCopy()
+			// Strict validation turns unknown-field warnings into errors, while
+			// reading back the spec also detects silent field pruning.
+			if err = c.Patch(ctx, test, client.Apply, client.FieldOwner("metadata-roundtrip"), strict); err != nil {
+				t.Fatalf("apply definition with strict field validation: %v", err)
+			}
+			stored := &api.SmokeTest{}
+			if err = c.Get(ctx, key(name), stored); err != nil {
+				t.Fatal(err)
+			}
+			if !equality.Semantic.DeepEqual(want, &stored.Spec) {
+				t.Fatalf("definition changed during storage (-want +got):\n%s", diff.Diff(want, &stored.Spec))
+			}
+			if err = definition.Validate(stored.Spec, "test/image@sha256:123"); err != nil {
+				t.Fatalf("stored definition is no longer valid: %v", err)
+			}
+			// Run snapshots embed the same templates in a separate CRD schema.
+			run := &api.SmokeTestRun{ObjectMeta: metav1.ObjectMeta{Name: "metadata-" + name, Namespace: definition.Namespace}, Spec: api.SmokeTestRunSpec{TestRef: api.TestReference{Name: name}}}
+			if err = c.Create(ctx, run, strict); err != nil {
+				t.Fatal(err)
+			}
+			run.Status.Definition = stored.Spec.DeepCopy()
+			if err = c.Status().Update(ctx, run, strict); err != nil {
+				t.Fatalf("save definition snapshot with strict field validation: %v", err)
+			}
+			storedRun := &api.SmokeTestRun{}
+			if err = c.Get(ctx, key(run.Name), storedRun); err != nil {
+				t.Fatal(err)
+			}
+			if !equality.Semantic.DeepEqual(want, storedRun.Status.Definition) {
+				t.Fatalf("definition snapshot changed during storage (-want +got):\n%s", diff.Diff(want, storedRun.Status.Definition))
+			}
+		})
+	}
+}
+
+func TestAPIServerLifecycle(t *testing.T) {
+	c := newIntegrationClient(t)
+	ctx := context.Background()
 	b, err := os.ReadFile("../../examples/cluster-autoscaler.yaml")
 	if err != nil {
 		t.Fatal(err)

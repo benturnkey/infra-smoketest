@@ -81,7 +81,11 @@ func (r *Reconciler) save(ctx context.Context, run *api.SmokeTestRun, before *ap
 	if reflect.DeepEqual(*before, run.Status) {
 		return nil
 	}
-	return r.Status().Update(ctx, run)
+	if err := r.Status().Update(ctx, run); err != nil {
+		return err
+	}
+	logStatusChanges(ctx, before, &run.Status)
+	return nil
 }
 
 func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
@@ -115,6 +119,8 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	if err := r.Get(ctx, req.NamespacedName, run); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
+	ctx = ctrl.LoggerInto(ctx, ctrl.LoggerFrom(ctx).WithValues("run", req.NamespacedName.String(), "runUID", run.UID, "test", run.Spec.TestRef.Name))
+	ctrl.LoggerFrom(ctx).V(1).Info("Reconciling Run", "phase", run.Status.Phase)
 	now := r.now()
 	before := run.Status.DeepCopy()
 	if !slices.Contains(run.Finalizers, Finalizer) {
@@ -195,6 +201,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		return ctrl.Result{}, err
 	}
 	if !locked {
+		ctrl.LoggerFrom(ctx).V(1).Info("Waiting for execution slot")
 		if now.Sub(run.CreationTimestamp.Time) > 10*time.Minute {
 			r.finish(run, "TimedOut", "Execution slot queue deadline exceeded", now)
 		}
@@ -269,7 +276,10 @@ func (r *Reconciler) release(ctx context.Context, run *api.SmokeTestRun) error {
 	}
 	if l.Spec.HolderIdentity != nil && *l.Spec.HolderIdentity == string(run.UID) {
 		l.Spec.HolderIdentity = ptr.To("")
-		return r.Update(ctx, l)
+		if err := r.Update(ctx, l); err != nil {
+			return err
+		}
+		ctrl.LoggerFrom(ctx).Info("Released execution slot")
 	}
 	return nil
 }
@@ -342,6 +352,7 @@ func (r *Reconciler) advance(ctx context.Context, run *api.SmokeTestRun, now tim
 }
 
 func (r *Reconciler) cleanup(ctx context.Context, run *api.SmokeTestRun, now time.Time) error {
+	ctx = ctrl.LoggerInto(ctx, ctrl.LoggerFrom(ctx).WithValues("cleanup", true))
 	before := run.Status.DeepCopy()
 	// Recover a successful Create whose status update was lost before cancellation.
 	for i := range run.Status.Resources {
@@ -382,7 +393,7 @@ func (r *Reconciler) cleanup(ctx context.Context, run *api.SmokeTestRun, now tim
 		if owned(p, run) {
 			remaining = true
 			if p.DeletionTimestamp.IsZero() {
-				if err := r.Delete(ctx, p, client.Preconditions{UID: ptr.To(p.UID)}); err != nil && !apierrors.IsNotFound(err) {
+				if err := r.deleteResource(ctx, p, "Pod"); err != nil {
 					return err
 				}
 			}
@@ -398,7 +409,7 @@ func (r *Reconciler) cleanup(ctx context.Context, run *api.SmokeTestRun, now tim
 			if owned(p, run) {
 				remaining = true
 				if p.DeletionTimestamp.IsZero() {
-					if err := r.Delete(ctx, p, client.Preconditions{UID: ptr.To(p.UID)}); err != nil && !apierrors.IsNotFound(err) {
+					if err := r.deleteResource(ctx, p, "PersistentVolumeClaim"); err != nil {
 						return err
 					}
 				}
@@ -431,6 +442,7 @@ func (r *Reconciler) cleanup(ctx context.Context, run *api.SmokeTestRun, now tim
 		}
 	}
 	if remaining {
+		ctrl.LoggerFrom(ctx).V(1).Info("Waiting for cleanup", "cleanupStartedAt", run.Status.CleanupStartedAt)
 		if now.Sub(run.Status.CleanupStartedAt.Time) > 5*time.Minute {
 			run.Status.Phase = "Failed"
 			if run.Status.Reason == "AssertionsPassed" {
@@ -473,6 +485,8 @@ func (r *Reconciler) cleanup(ctx context.Context, run *api.SmokeTestRun, now tim
 		if !owned(existing, run) {
 			return fail("ControllerError", "diagnostic ConfigMap name collision")
 		}
+	} else {
+		ctrl.LoggerFrom(ctx).Info("Created diagnostic ConfigMap", "resource", client.ObjectKeyFromObject(cm).String())
 	}
 	return nil
 }

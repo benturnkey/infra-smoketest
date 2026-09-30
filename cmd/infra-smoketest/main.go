@@ -52,10 +52,12 @@ func run() error {
 	role := flags.String("expected-role-arn", "", "Expected IAM role ARN for the identity test")
 	region := flags.String("region", "us-east-1", "AWS region expected from the webhook")
 	leader := flags.Bool("leader-elect", true, "Enable controller leader election")
+	logOptions := zap.Options{}
+	logOptions.BindFlags(flags)
 	if err := flags.Parse(os.Args[2:]); err != nil {
 		return err
 	}
-	ctrl.SetLogger(zap.New())
+	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&logOptions)))
 	scheme := runtime.NewScheme()
 	if err := clientgoscheme.AddToScheme(scheme); err != nil {
 		return err

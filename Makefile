@@ -11,7 +11,7 @@ integration:
 
 generate:
 	controller-gen object paths=./api/...
-	controller-gen crd:crdVersions=v1,maxDescLen=0 paths=./api/... output:crd:dir=config/crd
+	controller-gen crd:crdVersions=v1,generateEmbeddedObjectMeta=true paths=./api/... output:crd:dir=config/crd
 
 fmt:
 	gofmt -w api cmd internal
