@@ -180,6 +180,19 @@ otherwise, the Run snapshots the current definition when accepted.
 Use `kubectl explain smoketestrun.spec.testRef` or
 `kubectl explain smoketest.spec.stages` for field descriptions.
 
+`kubectl get smoketestruns` includes `FAILEDSTAGE`, taken from the existing
+`status.stages` entries whose phase is `Failed`. For example, a timeout while
+waiting for autoscaler scale-up shows `TimedOut` and `scale-up`. The stage remains
+visible through cleanup and in the final result. Runs with no failed stage,
+including execution-slot queue timeouts and missing-definition failures, leave
+the column empty. Use `kubectl get smoketestruns -o wide` for the full `MESSAGE`,
+including whether the queue, a stage, or the overall execution deadline expired.
+For observation failures or cancellation, `FAILEDSTAGE` identifies the stage that
+was interrupted; the message explains the underlying failure.
+
+These columns also work with existing Runs after applying the updated CRD with
+`kubectl apply --server-side -k config/crd`; no controller image update is needed.
+
 `kubectl wait --for=condition=Complete ...` only waits for a terminal result:
 also inspect `Succeeded` and `CleanupComplete`; completion alone does not mean
 the test passed. The API rejects changes to an existing Run's spec.

@@ -184,7 +184,9 @@ type SmokeTestList struct {
 // +kubebuilder:subresource:status
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=".status.phase"
 // +kubebuilder:printcolumn:name="Reason",type=string,JSONPath=".status.reason"
+// +kubebuilder:printcolumn:name="FailedStage",type=string,JSONPath=".status.stages[?(@.phase=='Failed')].name",description="Stage recorded as Failed; empty when no stage failed"
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=".metadata.creationTimestamp"
+// +kubebuilder:printcolumn:name="Message",type=string,JSONPath=".status.message",priority=1,description="Detailed explanation of the Run outcome"
 type SmokeTestRun struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`

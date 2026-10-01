@@ -21,9 +21,18 @@ spec:
     - jsonPath: .status.reason
       name: Reason
       type: string
+    - description: Stage recorded as Failed; empty when no stage failed
+      jsonPath: .status.stages[?(@.phase=='Failed')].name
+      name: FailedStage
+      type: string
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date
+    - description: Detailed explanation of the Run outcome
+      jsonPath: .status.message
+      name: Message
+      priority: 1
+      type: string
     name: v1alpha1
     schema:
       openAPIV3Schema:

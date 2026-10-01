@@ -4,7 +4,7 @@ namespace: infra-smoketest
 images:
   - name: ghcr.io/tkhq/infra-smoketest
     newName: ghcr.io/benturnkey/infra-smoketest
-    digest: sha256:c053e4213fa0593d46e44c6aaf0769c41e8823d252050f607cb92ea3a89598f2
+    digest: sha256:292ac3f94f14786c7bca7c63674892e4b6fddba4cc6bcdc8b28dd836b003e949
 resources:
   - namespace.yaml
   - rbac.yaml
