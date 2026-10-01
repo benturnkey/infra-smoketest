@@ -135,7 +135,7 @@ func TestAPIServerLifecycle(t *testing.T) {
 	if err = c.Create(ctx, run); err != nil {
 		t.Fatal(err)
 	}
-	r := &Reconciler{Client: c, ProbeImage: "test/image@sha256:123", Region: "us-east-1"}
+	r := &Reconciler{Client: c, ProbeImage: "test/image@sha256:123", AWSAccountID: "123456789012", ExpectedRoleARN: "arn:aws:iam::123456789012:role/infra-smoketest-aws", Region: "us-east-1"}
 	drive := func(n int) {
 		t.Helper()
 		for range n {
@@ -158,6 +158,18 @@ func TestAPIServerLifecycle(t *testing.T) {
 	if p.Spec.Containers[0].Image != run.Status.ProbeImage {
 		t.Fatal("probe image drift")
 	}
+	if run.Status.AWSAccountID != "123456789012" {
+		t.Fatal("shared account was not persisted in the Run snapshot")
+	}
+	foundAccount := false
+	for _, env := range p.Spec.Containers[0].Env {
+		if env.Name == "SMOKETEST_AWS_ACCOUNT_ID" && env.Value == run.Status.AWSAccountID {
+			foundAccount = true
+		}
+	}
+	if !foundAccount {
+		t.Fatal("non-identity probe did not inherit the shared account")
+	}
 	oldUID := p.UID
 	// Emulate restart after Create returned but before the status write.
 	run.Status.Resources[0].UID = ""
@@ -166,8 +178,11 @@ func TestAPIServerLifecycle(t *testing.T) {
 	if err = c.Status().Update(ctx, run); err != nil {
 		t.Fatal(err)
 	}
-	r = &Reconciler{Client: c, ProbeImage: "new/image@sha256:456"}
+	r = &Reconciler{Client: c, ProbeImage: "new/image@sha256:456", AWSAccountID: "000000000000"}
 	drive(2)
+	if run.Status.AWSAccountID != "123456789012" || run.Status.ExpectedRoleARN != "arn:aws:iam::123456789012:role/infra-smoketest-aws" {
+		t.Fatal("controller restart changed the Run's AWS configuration")
+	}
 	if run.Status.Resources[0].UID != string(oldUID) || run.Status.ProbeImage != "test/image@sha256:123" {
 		t.Fatal("restart duplicated a resource or changed the image snapshot")
 	}

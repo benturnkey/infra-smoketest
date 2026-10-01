@@ -27,7 +27,7 @@
                 ./api
                 ./cmd
                 ./internal
-                ./config
+                (pkgs.lib.fileset.difference ./config ./config/terraform)
                 ./examples
               ];
             };
@@ -70,7 +70,10 @@
       devShells = eachSystem (
         system:
         let
-          pkgs = nixpkgs.legacyPackages.${system};
+          pkgs = import nixpkgs {
+            inherit system;
+            config.allowUnfreePredicate = pkg: nixpkgs.lib.getName pkg == "terraform";
+          };
           assets = pkgs.linkFarm "envtest-assets" [
             {
               name = "kube-apiserver";
@@ -100,6 +103,7 @@
               shellcheck
               nixfmt
               skopeo
+              terraform
             ];
             KUBEBUILDER_ASSETS = "${assets}";
             GOTOOLCHAIN = "local";

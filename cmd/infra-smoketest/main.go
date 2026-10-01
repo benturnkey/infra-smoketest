@@ -49,12 +49,18 @@ func run() error {
 	flags := flag.NewFlagSet("controller", flag.ContinueOnError)
 	image := flags.String("probe-image", "", "Override probe image; defaults to this controller's Pod container image")
 	container := flags.String("controller-container-name", "controller", "Container name used for image discovery")
-	role := flags.String("expected-role-arn", "", "Expected IAM role ARN for the identity test")
+	account := flags.String("aws-account-id", "", "Shared AWS account ID for all tests")
+	roleName := flags.String("identity-role-name", "", "IAM role name in the shared AWS account (defaults to infra-smoketest-aws)")
+	role := flags.String("expected-role-arn", "", "Full IAM role ARN instead of deriving it from the shared AWS account")
 	region := flags.String("region", "us-east-1", "AWS region expected from the webhook")
 	leader := flags.Bool("leader-elect", true, "Enable controller leader election")
 	logOptions := zap.Options{}
 	logOptions.BindFlags(flags)
 	if err := flags.Parse(os.Args[2:]); err != nil {
+		return err
+	}
+	accountID, roleARN, err := controller.ResolveAWSIdentity(*account, *roleName, *role)
+	if err != nil {
 		return err
 	}
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&logOptions)))
@@ -81,7 +87,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	r := &controller.Reconciler{Client: direct, ProbeImage: resolved, ExpectedRoleARN: *role, Region: *region}
+	r := &controller.Reconciler{Client: direct, ProbeImage: resolved, AWSAccountID: accountID, ExpectedRoleARN: roleARN, Region: *region}
 	if err = r.SetupWithManager(mgr); err != nil {
 		return err
 	}
@@ -91,6 +97,6 @@ func run() error {
 	if err = mgr.AddReadyzCheck("readyz", healthz.Ping); err != nil {
 		return err
 	}
-	ctrl.Log.Info("starting smoke-test controller", "probeImage", resolved)
+	ctrl.Log.Info("starting smoke-test controller", "probeImage", resolved, "awsAccountID", accountID, "expectedRoleARN", roleARN, "region", *region)
 	return mgr.Start(ctx)
 }

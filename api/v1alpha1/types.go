@@ -253,6 +253,11 @@ type SmokeTestRunStatus struct {
 	// Pod template images inherit this value. It defaults to the controller's
 	// image unless the controller is configured with --probe-image.
 	ProbeImage string `json:"probeImage,omitempty"`
+	// AWSAccountID is the shared AWS account ID saved when the Run is accepted.
+	// Every probe receives it as SMOKETEST_AWS_ACCOUNT_ID. Changes to controller
+	// configuration do not affect Runs that have already been accepted.
+	// +kubebuilder:validation:Pattern=`^[0-9]{12}$`
+	AWSAccountID string `json:"awsAccountID,omitempty"`
 	// ExpectedRoleARN is the expected IAM role ARN saved from controller
 	// configuration for webhook and AWS caller identity checks.
 	ExpectedRoleARN string `json:"expectedRoleARN,omitempty"`

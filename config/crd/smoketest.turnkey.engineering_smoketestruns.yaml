@@ -102,6 +102,13 @@ spec:
               Status records the accepted definition, execution progress, observed
               resources, probe results, and cleanup outcome. It is managed by the controller.
             properties:
+              awsAccountID:
+                description: |-
+                  AWSAccountID is the shared AWS account ID saved when the Run is accepted.
+                  Every probe receives it as SMOKETEST_AWS_ACCOUNT_ID. Changes to controller
+                  configuration do not affect Runs that have already been accepted.
+                pattern: ^[0-9]{12}$
+                type: string
               baselineAt:
                 description: BaselineAt is when the Node UID baseline was recorded.
                 format: date-time

@@ -142,13 +142,13 @@ func (r *Reconciler) pod(ctx context.Context, run *api.SmokeTestRun, stage api.S
 		return nil, err
 	}
 	if c.Args[1] == "identity" && (run.Status.ExpectedRoleARN == "" || sa.Annotations["eks.amazonaws.com/role-arn"] != run.Status.ExpectedRoleARN) {
-		return nil, fail("PreconditionFailed", "configure expected role ARN and matching infra-smoketest-aws ServiceAccount")
+		return nil, fail("PreconditionFailed", "configure --aws-account-id (or --expected-role-arn) and a matching infra-smoketest-aws ServiceAccount role annotation; expected %q, found %q", run.Status.ExpectedRoleARN, sa.Annotations["eks.amazonaws.com/role-arn"])
 	}
 	if c.Args[1] != "identity" && sa.Annotations["eks.amazonaws.com/role-arn"] != "" {
 		return nil, fail("PreconditionFailed", "ordinary probe ServiceAccount must not have an IAM role")
 	}
 	c.Image = run.Status.ProbeImage
-	c.Env = []corev1.EnvVar{{Name: "SMOKETEST_RUN_UID", Value: string(run.UID)}, {Name: "SMOKETEST_STAGE", Value: stage.Name}, {Name: "SMOKETEST_EXPECTED_ROLE_ARN", Value: run.Status.ExpectedRoleARN}, {Name: "SMOKETEST_REGION", Value: run.Status.Region}, {Name: "AWS_EC2_METADATA_DISABLED", Value: "true"}}
+	c.Env = []corev1.EnvVar{{Name: "SMOKETEST_RUN_UID", Value: string(run.UID)}, {Name: "SMOKETEST_STAGE", Value: stage.Name}, {Name: "SMOKETEST_AWS_ACCOUNT_ID", Value: run.Status.AWSAccountID}, {Name: "SMOKETEST_EXPECTED_ROLE_ARN", Value: run.Status.ExpectedRoleARN}, {Name: "SMOKETEST_REGION", Value: run.Status.Region}, {Name: "AWS_EC2_METADATA_DISABLED", Value: "true"}}
 	c.TerminationMessagePath = "/dev/termination-log"
 	c.TerminationMessagePolicy = corev1.TerminationMessageReadFile
 	c.SecurityContext = &corev1.SecurityContext{RunAsNonRoot: ptr.To(true), RunAsUser: ptr.To(int64(65532)), RunAsGroup: ptr.To(int64(65532)), ReadOnlyRootFilesystem: ptr.To(true), AllowPrivilegeEscalation: ptr.To(false), Capabilities: &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}}}

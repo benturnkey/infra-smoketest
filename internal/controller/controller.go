@@ -35,6 +35,7 @@ const LeaseName = "infra-smoketest-execution"
 type Reconciler struct {
 	client.Client   // Direct API client: status and lock decisions must not use stale cache reads.
 	ProbeImage      string
+	AWSAccountID    string
 	ExpectedRoleARN string
 	Region          string
 	Now             func() time.Time
@@ -189,6 +190,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 			sum := sha256.Sum256(b)
 			run.Status.DefinitionHash = hex.EncodeToString(sum[:])
 			run.Status.ProbeImage = r.ProbeImage
+			run.Status.AWSAccountID = r.AWSAccountID
 			run.Status.ExpectedRoleARN = r.ExpectedRoleARN
 			run.Status.Region = r.Region
 			run.Status.Phase = "Pending"

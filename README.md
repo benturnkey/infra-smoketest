@@ -26,10 +26,11 @@ make build
 ```
 
 `make check` runs vet, race-enabled unit tests, API-server integration tests,
-manifest builds, formatting checks, and GitHub Actions linting. The flake
-provides Go, controller-gen, kube-apiserver, etcd, kubectl, Kustomize, and the
-other tools; envtest does not download executables at test time. Integration
-tests start local API-server/etcd processes and simulate infrastructure status.
+manifest builds, Terraform validation and mocked tests, formatting checks, and
+GitHub Actions linting. The flake provides Go, controller-gen, kube-apiserver,
+etcd, kubectl, Kustomize, Terraform, and the other tools. Envtest does not download
+executables at test time. Integration tests start local API-server/etcd processes
+and simulate infrastructure status.
 They do not connect to your cluster or AWS account.
 
 Nix also builds the package and container without a Docker daemon:
@@ -69,11 +70,13 @@ published by preparing this repository.
 ## Install and run
 
 The manifests in [config/default](config/default) install the namespace,
-controller Deployment, controller/probe ServiceAccounts, RBAC, and all three
-`SmokeTest` definitions from [examples](examples). Install the CRDs from
+controller Deployment, controller/probe/identity ServiceAccounts, shared AWS
+configuration, RBAC, and all three `SmokeTest` definitions from [examples](examples).
+Install the CRDs from
 [config/crd](config/crd) first. The controller is restricted to the
 `infra-smoketest` namespace and has read-only cluster permissions. It does not
-create IAM roles, ASGs, or the AWS ServiceAccount.
+create IAM roles or ASGs. Kustomize installs the identity ServiceAccount;
+the controller only reads it.
 
 Before a live test, arrange these prerequisites through their owning repos:
 
@@ -84,14 +87,44 @@ Before a live test, arrange these prerequisites through their owning repos:
 - Storage: the existing `ebs-gp3` class, EBS CSI nodes on ordinary AWS workers,
   and `Delete` reclaim policy. The controller checks gp3/encryption configuration
   and Kubernetes CSI state; it does not query actual EBS volume properties.
-- Identity: create `infra-smoketest/infra-smoketest-aws` later with the expected
-  `eks.amazonaws.com/role-arn` annotation and exact OIDC trust. Configure the
-  controller's `--expected-role-arn` argument independently. The role needs no
-  attached AWS service policy for `GetCallerIdentity`. Region defaults to
+- Identity: [config/aws-pod-identity-webhook](config/aws-pod-identity-webhook)
+  creates `infra-smoketest/infra-smoketest-aws` and is included in `config/default`.
+  Set `AWS_ACCOUNT_ID` and `AWS_IDENTITY_ROLE_NAME` once in its
+  [kustomization.yaml](config/aws-pod-identity-webhook/kustomization.yaml).
+  The account defaults to `361645878370`, matching the existing `tvc-dev`
+  GitOps configuration, and the role name defaults to `infra-smoketest-aws`.
+  Kustomize builds the ServiceAccount's role ARN from these values, and the
+  controller reads the same generated ConfigMap through `configMapKeyRef`.
+  The role's OIDC trust must allow subject
+  `system:serviceaccount:infra-smoketest:infra-smoketest-aws` and audience
+  `sts.amazonaws.com`. The role needs no attached AWS service policy for
+  `GetCallerIdentity`. The [Terraform module](config/terraform/aws) creates this
+  role using the cluster's existing IAM OIDC provider; its runnable example reads
+  the same shared account and role settings. Region defaults to
   `us-east-1` and can be set with `--region`.
 
-Make a deployment overlay that changes the controller image to your published
-digest and sets the expected role, for example:
+Every Run saves the shared account as `status.awsAccountID`, alongside
+`status.expectedRoleARN` and `status.region`. Every probe receives
+`SMOKETEST_AWS_ACCOUNT_ID`, `SMOKETEST_EXPECTED_ROLE_ARN`, and `SMOKETEST_REGION`
+from that snapshot; definitions do not need to repeat them. These are controller
+supplied environment variables, not substitution expressions in SmokeTest YAML.
+New probe implementations can read the shared account directly. The identity
+probe already checks the caller account through the expected role ARN.
+
+For custom controller deployments, `--aws-account-id=ACCOUNT` derives
+`arn:aws:iam::ACCOUNT:role/infra-smoketest-aws`; `--identity-role-name=NAME`
+selects a different role in that account. Existing `--expected-role-arn`
+configuration remains supported, including IAM paths and other partitions;
+when also supplying an account or role name, they must match the ARN.
+Without AWS settings, autoscaler and storage tests can still run, while the
+identity test fails its configuration precondition.
+
+Changing the shared values and reapplying `config/default` changes the generated
+ConfigMap name and rolls out the controller. Already accepted Runs retain their
+snapshot. The ServiceAccount annotation must still match a Run's saved role
+before it can create an identity Pod.
+
+Make a deployment overlay to select your published image digest, for example:
 
 ```yaml
 apiVersion: kustomize.config.k8s.io/v1beta1
@@ -102,17 +135,10 @@ images:
   - name: ghcr.io/tkhq/infra-smoketest
     newName: ghcr.io/YOUR-OWNER/YOUR-REPOSITORY
     digest: sha256:YOUR-DIGEST
-patches:
-  - target:
-      kind: Deployment
-      name: infra-smoketest
-    patch: |-
-      - op: replace
-        path: /spec/template/spec/containers/0/args
-        value:
-          - controller
-          - --expected-role-arn=arn:aws:iam::ACCOUNT:role/infra-smoketest-aws
 ```
+
+The shared account flags require a controller image built from this revision.
+Build/publish it and update the pinned digest before applying the Deployment.
 
 Install the CRDs, then apply your overlay. The overlay includes the definitions
 through `config/default`; no separate examples installation is needed. Installing
