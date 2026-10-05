@@ -443,6 +443,13 @@ func (r *Reconciler) cleanup(ctx context.Context, run *api.SmokeTestRun, now tim
 			}
 		}
 	}
+	if !remaining {
+		var err error
+		remaining, err = r.cleanupCertificates(ctx, run)
+		if err != nil {
+			return err
+		}
+	}
 	if remaining {
 		ctrl.LoggerFrom(ctx).V(1).Info("Waiting for cleanup", "cleanupStartedAt", run.Status.CleanupStartedAt)
 		if now.Sub(run.Status.CleanupStartedAt.Time) > 5*time.Minute {

@@ -4,6 +4,7 @@ package definition
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"slices"
 	"time"
 
@@ -18,6 +19,7 @@ const PoolLabel = "turnkey.engineering/designated-for"
 const PoolValue = "smoke-tests"
 const ProbeSA = "infra-smoketest-probe"
 const IdentitySA = "infra-smoketest-aws"
+const CertManagerSA = "infra-smoketest-cert-manager"
 
 func Timeout(s string) (time.Duration, error) {
 	if s == "" {
@@ -198,7 +200,7 @@ func validatePod(t corev1.PodTemplateSpec, image string) error {
 	if s.RestartPolicy != corev1.RestartPolicyNever || len(s.Containers) != 1 {
 		return fmt.Errorf("require one probe container and restartPolicy Never")
 	}
-	if s.ServiceAccountName != ProbeSA && s.ServiceAccountName != IdentitySA {
+	if s.ServiceAccountName != ProbeSA && s.ServiceAccountName != IdentitySA && s.ServiceAccountName != CertManagerSA {
 		return fmt.Errorf("unsupported serviceAccountName")
 	}
 	if s.AutomountServiceAccountToken != nil && *s.AutomountServiceAccountToken {
@@ -210,11 +212,36 @@ func validatePod(t corev1.PodTemplateSpec, image string) error {
 		}
 	}
 	c := s.Containers[0]
-	if err := allowedFields(c, "name", "image", "command", "args", "resources", "ports", "readinessProbe", "volumeMounts", "securityContext", "imagePullPolicy"); err != nil {
+	if err := allowedFields(c, "name", "image", "command", "args", "env", "resources", "ports", "readinessProbe", "volumeMounts", "securityContext", "imagePullPolicy"); err != nil {
 		return err
 	}
-	if c.Name != "probe" || (c.Image != "" && c.Image != image) || !slices.Equal(c.Command, []string{"/bin/infra-smoketest"}) || len(c.Args) != 2 || c.Args[0] != "probe" || !slices.Contains([]string{"ready", "storage-write", "storage-read", "identity"}, c.Args[1]) {
+	if c.Name != "probe" || (c.Image != "" && c.Image != image) || !slices.Equal(c.Command, []string{"/bin/infra-smoketest"}) || len(c.Args) != 2 || c.Args[0] != "probe" || !slices.Contains([]string{"ready", "storage-write", "storage-read", "identity", "cert-manager", "kube-state-metrics"}, c.Args[1]) {
 		return fmt.Errorf("require the approved image and probe command")
+	}
+	envValues := map[string]string{}
+	for _, env := range c.Env {
+		if _, duplicate := envValues[env.Name]; duplicate || env.ValueFrom != nil || env.Value == "" {
+			return fmt.Errorf("probe configuration requires unique, nonempty literal environment values")
+		}
+		envValues[env.Name] = env.Value
+		switch c.Args[1] {
+		case "kube-state-metrics":
+			u, err := url.Parse(env.Value)
+			if env.Name != "KUBE_STATE_METRICS_URL" || err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" || u.User != nil || u.Fragment != "" {
+				return fmt.Errorf("only a literal HTTP(S) KUBE_STATE_METRICS_URL is supported for kube-state-metrics")
+			}
+		case "cert-manager":
+			if env.Name != CertManagerIssuerNameEnv && env.Name != CertManagerIssuerKindEnv {
+				return fmt.Errorf("only %s and %s are supported for cert-manager", CertManagerIssuerNameEnv, CertManagerIssuerKindEnv)
+			}
+		default:
+			return fmt.Errorf("environment configuration is unsupported for %s", c.Args[1])
+		}
+	}
+	if c.Args[1] == "cert-manager" {
+		if _, err := ParseIssuerRef(envValues[CertManagerIssuerNameEnv], envValues[CertManagerIssuerKindEnv]); err != nil {
+			return err
+		}
 	}
 	if c.SecurityContext != nil {
 		if err := allowedFields(c.SecurityContext, "runAsUser", "runAsGroup", "runAsNonRoot", "readOnlyRootFilesystem", "allowPrivilegeEscalation", "capabilities", "seccompProfile"); err != nil {
@@ -225,8 +252,12 @@ func validatePod(t corev1.PodTemplateSpec, image string) error {
 		if s.ServiceAccountName != IdentitySA || t.Labels["pod-identity-webhook"] != "required" {
 			return fmt.Errorf("identity probe requires the AWS ServiceAccount and required webhook label")
 		}
+	} else if c.Args[1] == "cert-manager" {
+		if s.ServiceAccountName != CertManagerSA {
+			return fmt.Errorf("cert-manager probe requires its dedicated ServiceAccount")
+		}
 	} else if s.ServiceAccountName != ProbeSA {
-		return fmt.Errorf("only identity probe can use the AWS ServiceAccount")
+		return fmt.Errorf("ordinary probes require the probe ServiceAccount")
 	}
 	if _, ok := t.Labels["eks.amazonaws.com/skip-pod-identity-webhook"]; ok {
 		return fmt.Errorf("webhook skip label is forbidden")

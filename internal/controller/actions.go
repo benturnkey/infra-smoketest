@@ -148,7 +148,10 @@ func (r *Reconciler) pod(ctx context.Context, run *api.SmokeTestRun, stage api.S
 		return nil, fail("PreconditionFailed", "ordinary probe ServiceAccount must not have an IAM role")
 	}
 	c.Image = run.Status.ProbeImage
-	c.Env = []corev1.EnvVar{{Name: "SMOKETEST_RUN_UID", Value: string(run.UID)}, {Name: "SMOKETEST_STAGE", Value: stage.Name}, {Name: "SMOKETEST_AWS_ACCOUNT_ID", Value: run.Status.AWSAccountID}, {Name: "SMOKETEST_EXPECTED_ROLE_ARN", Value: run.Status.ExpectedRoleARN}, {Name: "SMOKETEST_REGION", Value: run.Status.Region}, {Name: "AWS_EC2_METADATA_DISABLED", Value: "true"}}
+	c.Env = append(c.Env, []corev1.EnvVar{{Name: "SMOKETEST_RUN_UID", Value: string(run.UID)}, {Name: "SMOKETEST_STAGE", Value: stage.Name}, {Name: "SMOKETEST_AWS_ACCOUNT_ID", Value: run.Status.AWSAccountID}, {Name: "SMOKETEST_EXPECTED_ROLE_ARN", Value: run.Status.ExpectedRoleARN}, {Name: "SMOKETEST_REGION", Value: run.Status.Region}, {Name: "AWS_EC2_METADATA_DISABLED", Value: "true"}}...)
+	for _, field := range []struct{ env, path string }{{"SMOKETEST_POD_NAME", "metadata.name"}, {"SMOKETEST_POD_NAMESPACE", "metadata.namespace"}, {"SMOKETEST_POD_UID", "metadata.uid"}} {
+		c.Env = append(c.Env, corev1.EnvVar{Name: field.env, ValueFrom: &corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{APIVersion: "v1", FieldPath: field.path}}})
+	}
 	c.TerminationMessagePath = "/dev/termination-log"
 	c.TerminationMessagePolicy = corev1.TerminationMessageReadFile
 	c.SecurityContext = &corev1.SecurityContext{RunAsNonRoot: ptr.To(true), RunAsUser: ptr.To(int64(65532)), RunAsGroup: ptr.To(int64(65532)), ReadOnlyRootFilesystem: ptr.To(true), AllowPrivilegeEscalation: ptr.To(false), Capabilities: &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}}}
@@ -184,7 +187,7 @@ func (r *Reconciler) pod(ctx context.Context, run *api.SmokeTestRun, stage api.S
 		}
 	} else {
 		if spec.NodeSelector[definition.PoolLabel] == definition.PoolValue {
-			return nil, fail("PreconditionFailed", "storage and identity probes must exclude the smoke pool")
+			return nil, fail("PreconditionFailed", "non-autoscaler probes must exclude the smoke pool")
 		}
 		spec.NodeSelector["turnkey.engineering/cloud-platform"] = "aws"
 		if spec.Affinity == nil {
@@ -249,6 +252,16 @@ func (r *Reconciler) pod(ctx context.Context, run *api.SmokeTestRun, stage api.S
 				return nil, fail("PreconditionFailed", "reader requires a completed writer on the same PVC")
 			}
 		}
+	}
+	if c.Args[1] == "cert-manager" {
+		// Only this probe receives a Kubernetes API token. The mounted token is
+		// short-lived and bound to the Pod; templates cannot supply projections.
+		spec.Volumes = append(spec.Volumes, corev1.Volume{Name: "kube-api-access", VolumeSource: corev1.VolumeSource{Projected: &corev1.ProjectedVolumeSource{DefaultMode: ptr.To(int32(0444)), Sources: []corev1.VolumeProjection{
+			{ServiceAccountToken: &corev1.ServiceAccountTokenProjection{Path: "token", ExpirationSeconds: ptr.To(int64(600))}},
+			{ConfigMap: &corev1.ConfigMapProjection{LocalObjectReference: corev1.LocalObjectReference{Name: "kube-root-ca.crt"}, Items: []corev1.KeyToPath{{Key: "ca.crt", Path: "ca.crt"}}}},
+			{DownwardAPI: &corev1.DownwardAPIProjection{Items: []corev1.DownwardAPIVolumeFile{{Path: "namespace", FieldRef: &corev1.ObjectFieldSelector{APIVersion: "v1", FieldPath: "metadata.namespace"}}}}},
+		}}}})
+		c.VolumeMounts = append(c.VolumeMounts, corev1.VolumeMount{Name: "kube-api-access", MountPath: "/var/run/secrets/kubernetes.io/serviceaccount", ReadOnly: true})
 	}
 	if t.Labels == nil {
 		t.Labels = map[string]string{}

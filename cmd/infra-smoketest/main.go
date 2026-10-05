@@ -29,7 +29,7 @@ func main() {
 }
 func run() error {
 	if len(os.Args) < 2 {
-		return fmt.Errorf("usage: infra-smoketest controller [flags] | probe ready|storage-write|storage-read|identity")
+		return fmt.Errorf("usage: infra-smoketest controller [flags] | probe ready|storage-write|storage-read|identity|cert-manager|kube-state-metrics")
 	}
 	ctx := ctrl.SetupSignalHandler()
 	if os.Args[1] == "probe" {

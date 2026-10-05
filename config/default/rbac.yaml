@@ -9,6 +9,58 @@ metadata:
   name: infra-smoketest-probe
 automountServiceAccountToken: false
 ---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: infra-smoketest-cert-manager
+automountServiceAccountToken: false
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: infra-smoketest-cert-manager
+rules:
+  - apiGroups: [cert-manager.io]
+    resources: [issuers, certificaterequests]
+    verbs: [create, get]
+  - apiGroups: [""]
+    resources: [secrets]
+    verbs: [create]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: infra-smoketest-cert-manager
+subjects:
+  - kind: ServiceAccount
+    name: infra-smoketest-cert-manager
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: infra-smoketest-cert-manager
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: infra-smoketest-cert-manager
+rules:
+  - apiGroups: [cert-manager.io]
+    resources: [clusterissuers]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: infra-smoketest-cert-manager
+subjects:
+  - kind: ServiceAccount
+    name: infra-smoketest-cert-manager
+    namespace: infra-smoketest
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: infra-smoketest-cert-manager
+---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
@@ -31,8 +83,14 @@ rules:
     verbs: [get, list, watch, create, patch]
   - apiGroups: [""]
     resources: [serviceaccounts]
-    resourceNames: [infra-smoketest-probe, infra-smoketest-aws]
+    resourceNames: [infra-smoketest-probe, infra-smoketest-aws, infra-smoketest-cert-manager]
     verbs: [get]
+  - apiGroups: [cert-manager.io]
+    resources: [issuers, certificaterequests]
+    verbs: [get, delete]
+  - apiGroups: [""]
+    resources: [secrets]
+    verbs: [get, delete]
   - apiGroups: [coordination.k8s.io]
     resources: [leases]
     verbs: [get, list, watch, create, update, patch]

@@ -63,7 +63,7 @@ func TestDefinitionMetadataRoundTrip(t *testing.T) {
 	c := newIntegrationClient(t)
 	ctx := context.Background()
 	strict := client.FieldValidation(metav1.FieldValidationStrict)
-	for _, name := range []string{"cluster-autoscaler", "ebs-csi", "aws-pod-identity-webhook"} {
+	for _, name := range []string{"cluster-autoscaler", "ebs-csi", "aws-pod-identity-webhook", "cert-manager", "kube-state-metrics"} {
 		t.Run(name, func(t *testing.T) {
 			b, err := os.ReadFile(filepath.Join("..", "..", "examples", name+".yaml"))
 			if err != nil {
@@ -74,6 +74,12 @@ func TestDefinitionMetadataRoundTrip(t *testing.T) {
 				t.Fatal(err)
 			}
 			test.Namespace = definition.Namespace
+			if name == "cert-manager" {
+				test.Spec.Stages[0].CreatePod.Template.Spec.Containers[0].Env = []corev1.EnvVar{
+					{Name: definition.CertManagerIssuerNameEnv, Value: "cluster-ca"},
+					{Name: definition.CertManagerIssuerKindEnv, Value: "ClusterIssuer"},
+				}
+			}
 			want := test.Spec.DeepCopy()
 			// Strict validation turns unknown-field warnings into errors, while
 			// reading back the spec also detects silent field pruning.
@@ -96,6 +102,8 @@ func TestDefinitionMetadataRoundTrip(t *testing.T) {
 				t.Fatal(err)
 			}
 			run.Status.Definition = stored.Spec.DeepCopy()
+			result := api.ProbeResult{Version: 1, RunUID: string(run.UID), Stage: "probe", Container: "probe", Success: true, CertificateSHA256: "test-fingerprint", MetricsPodUID: "test-pod-uid"}
+			run.Status.Resources = []api.ResourceRecord{{Stage: "probe", Kind: "Pod", Name: "probe", Result: &result}}
 			if err = c.Status().Update(ctx, run, strict); err != nil {
 				t.Fatalf("save definition snapshot with strict field validation: %v", err)
 			}
@@ -105,6 +113,9 @@ func TestDefinitionMetadataRoundTrip(t *testing.T) {
 			}
 			if !equality.Semantic.DeepEqual(want, storedRun.Status.Definition) {
 				t.Fatalf("definition snapshot changed during storage (-want +got):\n%s", diff.Diff(want, storedRun.Status.Definition))
+			}
+			if len(storedRun.Status.Resources) != 1 || !equality.Semantic.DeepEqual(&result, storedRun.Status.Resources[0].Result) {
+				t.Fatal("probe evidence was pruned from Run status")
 			}
 		})
 	}

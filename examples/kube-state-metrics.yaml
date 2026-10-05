@@ -1,0 +1,29 @@
+apiVersion: smoketest.turnkey.engineering/v1alpha1
+kind: SmokeTest
+metadata:
+  name: kube-state-metrics
+spec:
+  stages:
+    - name: scrape
+      timeout: 1m
+      createPod:
+        template:
+          metadata:
+            name: scrape
+          spec:
+            serviceAccountName: infra-smoketest-probe
+            automountServiceAccountToken: false
+            restartPolicy: Never
+            containers:
+              - name: probe
+                command: [/bin/infra-smoketest]
+                args: [probe, kube-state-metrics]
+                env:
+                  - name: KUBE_STATE_METRICS_URL
+                    value: http://kube-state-metrics.kube-state-metrics.svc:8080/metrics
+    - name: observed
+      dependsOn: [scrape]
+      timeout: 5m
+      assert:
+        - type: ProbeResult
+          resource: {fromStage: scrape}

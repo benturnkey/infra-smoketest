@@ -77,10 +77,17 @@ type PodAction struct {
 	// tolerations, containers, and volumes. The supported subset requires
 	// restartPolicy Never and one container named "probe", with command
 	// ["/bin/infra-smoketest"] and args ["probe", "ready"], ["probe", "storage-write"],
-	// ["probe", "storage-read"], or ["probe", "identity"]. Omit the container image
+	// ["probe", "storage-read"], ["probe", "identity"], ["probe", "cert-manager"],
+	// or ["probe", "kube-state-metrics"]. Omit the container image
 	// to inherit the Run's approved probe image, which defaults to the controller
 	// image; an explicit image must match it. Use serviceAccountName
 	// "infra-smoketest-probe", or "infra-smoketest-aws" for the identity probe.
+	// The cert-manager probe uses "infra-smoketest-cert-manager" and accepts
+	// literal CERT_MANAGER_ISSUER_NAME and CERT_MANAGER_ISSUER_KIND environment
+	// values to use an existing cert-manager.io Issuer or ClusterIssuer (kind
+	// defaults to Issuer). Omit both to create a temporary SelfSigned Issuer.
+	// Existing namespaced Issuers must be in the Run's namespace. The metrics
+	// probe accepts a literal KUBE_STATE_METRICS_URL environment value.
 	// The identity probe also requires metadata.labels.pod-identity-webhook:
 	// "required". PVC claimName values refer to logical PVC template names from
 	// ancestor stages. The controller assigns the Pod's actual name and ownership
@@ -216,8 +223,8 @@ type SmokeTestRunSpec struct {
 // UID or generation. A mismatch causes the Run to fail with PreconditionFailed.
 type TestReference struct {
 	// Name is the metadata.name of a SmokeTest in the Run's namespace.
-	// The example definitions are cluster-autoscaler, ebs-csi, and
-	// aws-pod-identity-webhook. List installed definitions with
+	// The example definitions include cluster-autoscaler, ebs-csi,
+	// aws-pod-identity-webhook, cert-manager, and kube-state-metrics. List them with
 	// "kubectl get smoketests -n infra-smoketest".
 	Name string `json:"name"`
 	// UID optionally requires the SmokeTest's metadata.uid to match, detecting
@@ -380,6 +387,12 @@ type ProbeResult struct {
 	// ARN is the STS caller ARN returned by an identity probe, checked against
 	// the expected IAM role. An assumed-role caller ARN differs from the IAM role ARN.
 	ARN string `json:"arn,omitempty"`
+	// CertificateSHA256 is the SHA-256 fingerprint of the verified certificate
+	// issued by cert-manager for this probe's fresh private key and DNS name.
+	CertificateSHA256 string `json:"certificateSHA256,omitempty"`
+	// MetricsPodUID identifies the probe Pod observed in kube-state-metrics
+	// kube_pod_info and Running kube_pod_status_phase samples.
+	MetricsPodUID string `json:"metricsPodUID,omitempty"`
 	// Error is a bounded failure message reported by the probe.
 	Error string `json:"error,omitempty"`
 }

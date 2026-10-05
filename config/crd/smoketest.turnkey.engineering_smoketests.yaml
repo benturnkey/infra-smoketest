@@ -426,10 +426,17 @@ spec:
                             tolerations, containers, and volumes. The supported subset requires
                             restartPolicy Never and one container named "probe", with command
                             ["/bin/infra-smoketest"] and args ["probe", "ready"], ["probe", "storage-write"],
-                            ["probe", "storage-read"], or ["probe", "identity"]. Omit the container image
+                            ["probe", "storage-read"], ["probe", "identity"], ["probe", "cert-manager"],
+                            or ["probe", "kube-state-metrics"]. Omit the container image
                             to inherit the Run's approved probe image, which defaults to the controller
                             image; an explicit image must match it. Use serviceAccountName
                             "infra-smoketest-probe", or "infra-smoketest-aws" for the identity probe.
+                            The cert-manager probe uses "infra-smoketest-cert-manager" and accepts
+                            literal CERT_MANAGER_ISSUER_NAME and CERT_MANAGER_ISSUER_KIND environment
+                            values to use an existing cert-manager.io Issuer or ClusterIssuer (kind
+                            defaults to Issuer). Omit both to create a temporary SelfSigned Issuer.
+                            Existing namespaced Issuers must be in the Run's namespace. The metrics
+                            probe accepts a literal KUBE_STATE_METRICS_URL environment value.
                             The identity probe also requires metadata.labels.pod-identity-webhook:
                             "required". PVC claimName values refer to logical PVC template names from
                             ancestor stages. The controller assigns the Pod's actual name and ownership

@@ -1,9 +1,10 @@
 # Infrastructure smoke-test controller
 
 A Kubernetes controller that runs declarative infrastructure checks and stores
-their results in `SmokeTestRun` resources. The first definitions validate
-Cluster Autoscaler scale-up, EBS CSI volume persistence, and the AWS IRSA
-pod-identity webhook. See [the design](new-plan.md) for the intended MVP and
+their results in `SmokeTestRun` resources. Definitions validate
+Cluster Autoscaler scale-up, EBS CSI volume persistence, the AWS IRSA
+pod-identity webhook, cert-manager issuance, and kube-state-metrics observation.
+See [the design](new-plan.md) for the intended MVP and
 [examples](examples) for the current API.
 
 The controller and probes are subcommands of **one binary and one image**.
@@ -64,14 +65,14 @@ controller/probe image. After successful push builds, it publishes to
 PRs and manual workflow runs do not publish. Actions are pinned to commits.
 Publishing requires the repository's Actions token to have package write
 access. For private images, configure `imagePullSecrets` on the controller
-Deployment and both probe ServiceAccounts. Nothing has been pushed or
+Deployment and the probe ServiceAccounts. Nothing has been pushed or
 published by preparing this repository.
 
 ## Install and run
 
 The manifests in [config/default](config/default) install the namespace,
-controller Deployment, controller/probe/identity ServiceAccounts, shared AWS
-configuration, RBAC, and all three `SmokeTest` definitions from [examples](examples).
+controller Deployment, controller/probe/identity/cert-manager ServiceAccounts,
+shared AWS configuration, RBAC, and all five `SmokeTest` definitions from [examples](examples).
 Install the CRDs from
 [config/crd](config/crd) first. The controller is restricted to the
 `infra-smoketest` namespace and has read-only cluster permissions. It does not
@@ -102,6 +103,22 @@ Before a live test, arrange these prerequisites through their owning repos:
   role using the cluster's existing IAM OIDC provider; its runnable example reads
   the same shared account and role settings. Region defaults to
   `us-east-1` and can be set with `--region`.
+- Certificates: cert-manager's `cert-manager.io/v1` Issuer and CertificateRequest
+  APIs, webhook, issuer controller, request approver, and self-signed signer must
+  operate in `infra-smoketest`. The dedicated probe ServiceAccount can create
+  and read Issuers/CertificateRequests and create Secrets in that namespace.
+  It also has read-only `get` access to ClusterIssuers for optional existing
+  issuer selection.
+  Custom approval policies must permit its requests for a namespaced SelfSigned
+  Issuer, or for the configured existing issuer. With the default configuration,
+  no production issuer, external CA, DNS credentials, or ACME account is required.
+- Metrics: the probe must reach the kube-state-metrics Service, which must watch
+  Pods in `infra-smoketest` and expose `kube_pod_info` and `kube_pod_status_phase`.
+  The example targets `http://kube-state-metrics.kube-state-metrics.svc:8080/metrics`,
+  matching the GitOps namespace. Override the literal `KUBE_STATE_METRICS_URL`
+  container environment variable in the definition for another Service. This
+  probe supports HTTP or HTTPS using the image's trusted CAs; it sends no API
+  token or other credentials and does not follow redirects.
 
 Every Run saves the shared account as `status.awsAccountID`, alongside
 `status.expectedRoleARN` and `status.region`. Every probe receives
@@ -116,7 +133,8 @@ For custom controller deployments, `--aws-account-id=ACCOUNT` derives
 selects a different role in that account. Existing `--expected-role-arn`
 configuration remains supported, including IAM paths and other partitions;
 when also supplying an account or role name, they must match the ARN.
-Without AWS settings, autoscaler and storage tests can still run, while the
+Without AWS settings, autoscaler, storage, certificate, and metrics tests can
+still run, while the
 identity test fails its configuration precondition.
 
 Changing the shared values and reapplying `config/default` changes the generated
@@ -173,12 +191,74 @@ schemas makes these CRDs too large for some client-side apply annotations.
 `spec.testRef` selects a `SmokeTest` definition in the Run's namespace. List
 available definitions with `kubectl get smoketests -n infra-smoketest`, then set
 `testRef.name` to one of the returned names. The default deployment installs
-`cluster-autoscaler`, `ebs-csi`, and `aws-pod-identity-webhook`. Optional `testRef.uid`
+`cluster-autoscaler`, `ebs-csi`, `aws-pod-identity-webhook`, `cert-manager`, and
+`kube-state-metrics`. Optional `testRef.uid`
 and `testRef.generation` require a matching definition UID and generation;
 otherwise, the Run snapshots the current definition when accepted.
 
 Use `kubectl explain smoketestrun.spec.testRef` or
 `kubectl explain smoketest.spec.stages` for field descriptions.
+
+For the new services, create Runs the same way, with `testRef.name: cert-manager`
+or `testRef.name: kube-state-metrics`. Build and deploy the updated combined image
+and reapply the CRD and default manifests first: these probes require the new
+commands, result fields, and namespace RBAC.
+
+The [cert-manager definition](examples/cert-manager.yaml) generates a fresh ECDSA
+key and CSR for a Run-specific `.invalid` DNS name. By default it creates a temporary
+[SelfSigned Issuer](https://cert-manager.io/docs/configuration/selfsigned/), and
+submits a CertificateRequest. It waits for the Issuer and request to become Ready,
+then verifies the returned certificate's key, exact DNS name, self-signature,
+validity period, and server-auth usage. Its SHA-256 fingerprint is saved as
+`status.resources[].result.certificateSHA256`. This exercises admission, approval,
+and signing; it does not test the Certificate controller's renewal behavior,
+ACME/DNS challenges, or CA injection.
+
+To use an existing issuer, add literal environment values to the `probe` container
+in the definition's `issue` stage (under
+`spec.stages[].createPod.template.spec.containers[]`):
+
+```yaml
+env:
+  - name: CERT_MANAGER_ISSUER_NAME
+    value: cluster-ca
+  - name: CERT_MANAGER_ISSUER_KIND
+    value: ClusterIssuer
+```
+
+`CERT_MANAGER_ISSUER_KIND` defaults to `Issuer`, which must exist in
+`infra-smoketest`. `ClusterIssuer` selects a cluster-scoped issuer. Both use
+the `cert-manager.io` API group. Omit both environment variables to use a new
+temporary SelfSigned Issuer. A missing, inaccessible, or unusable explicit issuer
+fails the test; it never silently falls back. Accepted Runs retain their selected
+issuer configuration in the definition snapshot.
+
+Existing issuers are only read and referenced, never created, modified, adopted,
+or deleted by the test. With an existing SelfSigned issuer, the probe still creates
+its temporary private-key Secret. For a CA-backed issuer it keeps the key in memory
+and verifies the issued chain using the CertificateRequest's `status.ca` trust
+bundle and any intermediates in `status.certificate`. If the issuer supplies no
+CA bundle, verification uses the image's system trust roots. The probe does not
+read the issuer's signing-key Secret or automatically trust the returned leaf.
+
+The selected issuer and its approval policy must permit ECDSA P-256 server-auth
+requests for `smoke-<hash>.invalid` with a requested duration of one hour. This
+is suitable for internal CAs such as `cluster-ca`; the generated `.invalid` name
+cannot be used for public ACME issuance. The probe and stage deadlines remain
+unchanged when an existing issuer is selected.
+
+The [kube-state-metrics definition](examples/kube-state-metrics.yaml) scrapes the
+Service until both `kube_pod_info=1` and `kube_pod_status_phase{phase="Running"}=1`
+identify the probe's exact namespace, Pod name, and UID. These
+[Pod metrics](https://github.com/kubernetes/kube-state-metrics/blob/main/docs/metrics/workload/pod-metrics.md)
+prove that kube-state-metrics observed a newly created object and serves its state.
+A health response, unrelated samples, or metrics for a replaced Pod cannot pass.
+The observed UID is saved as `status.resources[].result.metricsPodUID`. This checks
+the Service's exposition endpoint, not Prometheus ingestion or alerting.
+
+Both finite probes retry observations for up to three minutes after starting;
+their result stages allow five minutes to include scheduling and image pulls.
+Failures retain the last observation in the structured probe error.
 
 `kubectl get smoketestruns` includes `FAILEDSTAGE`, taken from the existing
 `status.stages` entries whose phase is `Failed`. For example, a timeout while
@@ -229,8 +309,18 @@ image reference, not a runtime-specific `imageID`.
 
 One execution Lease serializes all tests. A queued Run times out after ten
 minutes; active execution allows 25 minutes plus five minutes for cleanup.
-Submit longer batches sequentially. Cleanup deletes only Run-owned Pods/PVCs
-and waits for recorded CSI dependents to disappear. It never deletes Nodes,
+Submit longer batches sequentially. Cleanup deletes Run-owned Pods/PVCs
+and waits for recorded CSI dependents to disappear. For cert-manager, it also
+removes the temporary CertificateRequest, generated Issuer (if any), and
+private-key Secret (if any) after
+the probe Pod has stopped, verifying ownership against its recorded UID. This
+runs on success, failure, timeout, and cancellation; the resources also carry
+Pod owner references for garbage collection. Existing issuers are excluded from
+cleanup. Cleanup must finish before the Run
+passes or releases its execution slot. The key is never included in results or
+diagnostics. Only the cert-manager probe receives a short-lived projected API
+token; ordinary probes still have no Kubernetes API credentials.
+The controller never deletes Nodes,
 PVs, VolumeAttachments, or AWS resources directly. If cleanup stalls, the Run
 fails, retains its finalizer and execution slot, and keeps attempting cleanup.
 Inspect the remaining Pod/PVC/PV/attachment and repair its underlying problem;

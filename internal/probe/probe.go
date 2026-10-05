@@ -19,6 +19,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/credentials/stscreds"
 	"github.com/aws/aws-sdk-go-v2/service/sts"
 	api "github.com/tkhq/infra-smoketest/api/v1alpha1"
+	"github.com/tkhq/infra-smoketest/internal/definition"
 )
 
 func Sentinel(runUID string) []byte { return []byte("infra-smoketest/v1/" + runUID + "\n") }
@@ -121,6 +122,35 @@ func Run(ctx context.Context, command string) error {
 			result.Checksum, err = Disk("/data", result.RunUID, command == "storage-write")
 		case "identity":
 			result.Account, result.ARN, err = Identity(ctx, os.Getenv("SMOKETEST_EXPECTED_ROLE_ARN"), os.Getenv("SMOKETEST_REGION"))
+		case "cert-manager", "kube-state-metrics":
+			pod, podErr := currentPod()
+			if podErr != nil {
+				err = podErr
+				break
+			}
+			if command == "cert-manager" {
+				issuer, configErr := definition.ParseIssuerRef(os.Getenv(definition.CertManagerIssuerNameEnv), os.Getenv(definition.CertManagerIssuerKindEnv))
+				if configErr != nil {
+					err = configErr
+					break
+				}
+				c, clientErr := inClusterClient()
+				if clientErr != nil {
+					err = clientErr
+					break
+				}
+				result.CertificateSHA256, err = certManager(ctx, c, pod, issuer, 2*time.Second)
+			} else {
+				endpoint := os.Getenv("KUBE_STATE_METRICS_URL")
+				if endpoint == "" {
+					endpoint = DefaultMetricsURL
+				}
+				httpClient := &http.Client{Timeout: 10 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+				err = kubeStateMetrics(ctx, httpClient, endpoint, pod, 2*time.Second)
+				if err == nil {
+					result.MetricsPodUID = pod.uid
+				}
+			}
 		default:
 			err = fmt.Errorf("unknown probe command %q", command)
 		}

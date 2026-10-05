@@ -5,3 +5,5 @@ resources:
   - cluster-autoscaler.yaml
   - ebs-csi.yaml
   - aws-pod-identity-webhook.yaml
+  - cert-manager.yaml
+  - kube-state-metrics.yaml

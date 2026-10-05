@@ -1,0 +1,33 @@
+apiVersion: smoketest.turnkey.engineering/v1alpha1
+kind: SmokeTest
+metadata:
+  name: cert-manager
+spec:
+  stages:
+    - name: issue
+      timeout: 1m
+      createPod:
+        template:
+          metadata:
+            name: issue
+          spec:
+            serviceAccountName: infra-smoketest-cert-manager
+            automountServiceAccountToken: false
+            restartPolicy: Never
+            containers:
+              - name: probe
+                command: [/bin/infra-smoketest]
+                args: [probe, cert-manager]
+                # Optional existing cert-manager.io Issuer (in this namespace)
+                # or ClusterIssuer. Omit env to create a temporary SelfSigned Issuer.
+                # env:
+                #   - name: CERT_MANAGER_ISSUER_NAME
+                #     value: cluster-ca
+                #   - name: CERT_MANAGER_ISSUER_KIND
+                #     value: ClusterIssuer # defaults to Issuer
+    - name: issued
+      dependsOn: [issue]
+      timeout: 5m
+      assert:
+        - type: ProbeResult
+          resource: {fromStage: issue}

@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -289,6 +290,15 @@ func (r *Reconciler) assert(ctx context.Context, run *api.SmokeTestRun, a api.As
 				if err := probe.ValidateIdentity(run.Status.ExpectedRoleARN, rec.Result.Account, rec.Result.ARN); err != nil {
 					return false, "", fail("AssertionFailed", "%v", err)
 				}
+			}
+			if command == "cert-manager" {
+				fingerprint, err := hex.DecodeString(rec.Result.CertificateSHA256)
+				if err != nil || len(fingerprint) != 32 {
+					return false, "", fail("AssertionFailed", "missing or invalid issued certificate fingerprint")
+				}
+			}
+			if command == "kube-state-metrics" && (rec.UID == "" || rec.Result.MetricsPodUID != rec.UID) {
+				return false, "", fail("AssertionFailed", "metrics evidence does not match the probe Pod UID")
 			}
 		}
 		return true, "Probe passed", nil

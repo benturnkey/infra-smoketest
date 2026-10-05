@@ -36,6 +36,12 @@ func TestSharedAWSManifestReferences(t *testing.T) {
 	var account *corev1.ServiceAccount
 	var deployment *appsv1.Deployment
 	var role *rbacv1.Role
+	roles := map[string]*rbacv1.Role{}
+	bindings := map[string]*rbacv1.RoleBinding{}
+	accounts := map[string]*corev1.ServiceAccount{}
+	tests := map[string]*api.SmokeTest{}
+	var certClusterRole *rbacv1.ClusterRole
+	var certClusterBinding *rbacv1.ClusterRoleBinding
 	for {
 		var raw json.RawMessage
 		if err := documents.Decode(&raw); errors.Is(err, io.EOF) {
@@ -53,17 +59,82 @@ func TestSharedAWSManifestReferences(t *testing.T) {
 				config = obj
 			}
 		case *corev1.ServiceAccount:
+			accounts[obj.Name] = obj
 			if obj.Name == definition.IdentitySA {
 				account = obj
 			}
 		case *appsv1.Deployment:
 			deployment = obj
 		case *rbacv1.Role:
-			role = obj
+			roles[obj.Name] = obj
+			if obj.Name == "infra-smoketest-controller" {
+				role = obj
+			}
+		case *rbacv1.RoleBinding:
+			bindings[obj.Name] = obj
+		case *api.SmokeTest:
+			tests[obj.Name] = obj
+		case *rbacv1.ClusterRole:
+			if obj.Name == definition.CertManagerSA {
+				certClusterRole = obj
+			}
+		case *rbacv1.ClusterRoleBinding:
+			if obj.Name == definition.CertManagerSA {
+				certClusterBinding = obj
+			}
 		}
 	}
 	if config == nil || account == nil || deployment == nil || role == nil {
 		t.Fatal("default deployment must include shared AWS configuration, identity ServiceAccount, controller, and RBAC")
+	}
+	for _, name := range []string{"cert-manager", "kube-state-metrics"} {
+		test := tests[name]
+		if test == nil || test.Namespace != definition.Namespace {
+			t.Fatalf("missing namespaced %s definition", name)
+		}
+		if err := definition.Validate(test.Spec, "image"); err != nil {
+			t.Fatalf("invalid installed %s definition: %v", name, err)
+		}
+	}
+	certAccount, certRole, certBinding := accounts[definition.CertManagerSA], roles[definition.CertManagerSA], bindings[definition.CertManagerSA]
+	if certAccount == nil || certAccount.AutomountServiceAccountToken == nil || *certAccount.AutomountServiceAccountToken || certRole == nil || certBinding == nil {
+		t.Fatal("missing dedicated cert-manager credentials/RBAC")
+	}
+	if certRole.Namespace != definition.Namespace || certBinding.RoleRef.Kind != "Role" || certBinding.RoleRef.Name != certRole.Name || len(certBinding.Subjects) != 1 || certBinding.Subjects[0].Name != certAccount.Name || certBinding.Subjects[0].Namespace != definition.Namespace {
+		t.Fatal("cert-manager permissions are not bound to its namespaced account")
+	}
+	for _, requirement := range []struct{ group, resource, verb string }{
+		{"cert-manager.io", "issuers", "create"}, {"cert-manager.io", "issuers", "get"},
+		{"cert-manager.io", "certificaterequests", "create"}, {"cert-manager.io", "certificaterequests", "get"},
+		{"", "secrets", "create"},
+	} {
+		if !roleAllows(certRole, requirement.group, requirement.resource, requirement.verb) {
+			t.Fatalf("cert-manager probe lacks %s %s", requirement.verb, requirement.resource)
+		}
+	}
+	if roleAllows(certRole, "", "secrets", "get") || roleAllows(certRole, "cert-manager.io", "certificaterequests/status", "update") {
+		t.Fatal("cert-manager probe can read unrelated keys or set its own issuance result")
+	}
+	if certClusterRole == nil || certClusterBinding == nil || len(certClusterRole.Rules) != 1 {
+		t.Fatal("missing ClusterIssuer lookup permissions")
+	}
+	clusterRule := certClusterRole.Rules[0]
+	if !slices.Equal(clusterRule.APIGroups, []string{"cert-manager.io"}) || !slices.Equal(clusterRule.Resources, []string{"clusterissuers"}) || !slices.Equal(clusterRule.Verbs, []string{"get"}) {
+		t.Fatal("cert-manager probe cluster access must be limited to reading ClusterIssuers")
+	}
+	if certClusterBinding.RoleRef.Kind != "ClusterRole" || certClusterBinding.RoleRef.Name != certClusterRole.Name || len(certClusterBinding.Subjects) != 1 || certClusterBinding.Subjects[0].Name != certAccount.Name || certClusterBinding.Subjects[0].Namespace != definition.Namespace {
+		t.Fatal("ClusterIssuer lookup permission is not bound to the cert-manager probe")
+	}
+	for _, resource := range []string{"issuers", "certificaterequests", "secrets"} {
+		group := "cert-manager.io"
+		if resource == "secrets" {
+			group = ""
+		}
+		for _, verb := range []string{"get", "delete"} {
+			if !roleAllows(role, group, resource, verb) {
+				t.Fatalf("controller lacks cleanup permission: %s %s", verb, resource)
+			}
+		}
 	}
 	_, expectedRole, err := ResolveAWSIdentity(config.Data["AWS_ACCOUNT_ID"], config.Data["AWS_IDENTITY_ROLE_NAME"], "")
 	if err != nil || expectedRole == "" || account.Annotations["eks.amazonaws.com/role-arn"] != expectedRole {
@@ -90,4 +161,13 @@ func TestSharedAWSManifestReferences(t *testing.T) {
 		}
 	}
 	t.Fatal("controller cannot read the identity ServiceAccount with the rendered RBAC")
+}
+
+func roleAllows(role *rbacv1.Role, group, resource, verb string) bool {
+	for _, rule := range role.Rules {
+		if slices.Contains(rule.APIGroups, group) && slices.Contains(rule.Resources, resource) && slices.Contains(rule.Verbs, verb) {
+			return true
+		}
+	}
+	return false
 }
