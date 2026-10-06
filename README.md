@@ -4,8 +4,7 @@ A Kubernetes controller that runs declarative infrastructure checks and stores
 their results in `SmokeTestRun` resources. Definitions validate
 Cluster Autoscaler scale-up, EBS CSI volume persistence, the AWS IRSA
 pod-identity webhook, cert-manager issuance, and kube-state-metrics observation.
-See [the design](new-plan.md) for the intended MVP and
-[examples](examples) for the current API.
+See [examples](examples) for the current tests.
 
 The controller and probes are subcommands of **one binary and one image**.
 Unless `--probe-image` is supplied, the controller reads its own Pod and uses
@@ -53,9 +52,14 @@ the checks. Keep the Go module lock and `flake.lock` in version control.
 
 ## GitHub Actions
 
-[ci.yaml](.github/workflows/ci.yaml) tests PRs, `main`, and `v*` tags using the
-same flake. It verifies generated CRDs/DeepCopy code and builds the combined
-controller/probe image. After successful push builds, it publishes to
+[ci.yaml](.github/workflows/ci.yaml) runs for PRs and pushes to `main` that change
+`api/`, `cmd/`, `internal/`, Go dependencies, the Nix flake or lockfile,
+`Makefile`, `scripts/`, or `.github/workflows/`. Changes confined to `config/`,
+`examples/`, or the root README do not trigger the workflow. Release pushes with
+`v*` tags and manual workflow runs still run regardless of changed paths.
+
+The workflow uses the same flake, verifies generated CRDs/DeepCopy code, and
+builds the combined controller/probe image. After successful push builds, it publishes to
 `ghcr.io/<repository-owner>/<repository-name>` using `GITHUB_TOKEN`:
 
 - `sha-<full-commit>` for every published build.

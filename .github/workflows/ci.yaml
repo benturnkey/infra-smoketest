@@ -1,9 +1,31 @@
 name: Build, test, and publish
 on:
   pull_request:
+    paths:
+      - 'api/**'
+      - 'cmd/**'
+      - 'internal/**'
+      - 'go.mod'
+      - 'go.sum'
+      - 'flake.nix'
+      - 'flake.lock'
+      - 'Makefile'
+      - 'scripts/**'
+      - '.github/workflows/**'
   push:
     branches: [main]
     tags: ['v*']
+    paths:
+      - 'api/**'
+      - 'cmd/**'
+      - 'internal/**'
+      - 'go.mod'
+      - 'go.sum'
+      - 'flake.nix'
+      - 'flake.lock'
+      - 'Makefile'
+      - 'scripts/**'
+      - '.github/workflows/**'
   workflow_dispatch:
 
 permissions:
