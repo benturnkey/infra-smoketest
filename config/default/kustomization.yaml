@@ -3,7 +3,7 @@ kind: Kustomization
 namespace: infra-smoketest
 images:
   - name: ghcr.io/tkhq/infra-smoketest
-    newName: ghcr.io/benturnkey/infra-smoketest
+    newName: ghcr.io/tkhq/infra-smoketest
     digest: sha256:1a1bc936cdad20549aac1a20cb3006c093ab42f9031a62eb831215f783bd045c
 resources:
   - namespace.yaml
